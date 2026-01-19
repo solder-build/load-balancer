@@ -1,0 +1,25 @@
+{
+  "name": "rpc-load-balancer",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "rm -rf dist",
+    "example": "npm run build && node dist/example/rpc/run.js"
+  },
+  "dependencies": {
+    "@solana/rpc": "^2.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3"
+  }
+}
+
