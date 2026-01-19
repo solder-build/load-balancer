@@ -1,6 +1,7 @@
 {
   "name": "rpc-load-balancer",
   "version": "0.1.0",
+  "description": "Load balancer and gateway for JSON-RPC endpoints",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -8,18 +9,31 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./sdk": {
+      "types": "./dist/sdk/index.d.ts",
+      "default": "./dist/sdk/index.js"
+    },
+    "./gateway": {
+      "types": "./dist/gateway/index.d.ts",
+      "default": "./dist/gateway/index.js"
     }
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "clean": "rm -rf dist",
-    "example": "npm run build && node dist/example/rpc/run.js"
+    "gateway": "npm run build && node dist/example/gateway.js",
+    "sdk": "npm run build && node dist/example/sdk.js",
+    "client": "npm run build && node dist/example/client.js"
   },
   "dependencies": {
-    "@solana/rpc": "^2.0.0"
+    "@solana/rpc": "^5.4.0"
   },
   "devDependencies": {
+    "@types/node": "^20.0.0",
     "typescript": "^5.6.3"
+  },
+  "dependencies": {
+    "@solana/rpc": "^5.4.0"
   }
 }
-
