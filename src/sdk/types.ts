@@ -12,6 +12,10 @@ export interface EndpointConfig {
   headers?: Record<string, string>;
   /** Optional timeout in milliseconds */
   timeoutMs?: number;
+  /** Optional whitelist of methods this endpoint handles (if set, only these methods are allowed) */
+  methods?: string[];
+  /** Optional blocklist of methods this endpoint should not handle */
+  blockedMethods?: string[];
 }
 
 /**

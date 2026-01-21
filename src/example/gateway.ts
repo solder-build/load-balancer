@@ -10,11 +10,15 @@ const gateway = new RpcGateway({
     {
       id: "default",
       endpoints: [
-        "https://api.mainnet.solana.com"
+        {
+          url: "https://elite.rpc.solanavibestation.com/?api_key=e74b083a2416270764a3c17b479a27b4",
+        },
+        {
+          url: "https://api.mainnet-beta.solana.com",
+        },
       ],
     },
   ],
-  defaultRouteId: "default",
 });
 
 async function main(): Promise<void> {

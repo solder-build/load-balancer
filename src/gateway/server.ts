@@ -28,8 +28,9 @@ const DEFAULT_MAX_BODY_BYTES = 1_000_000; // 1MB
  * });
  *
  * await gateway.start();
- * // RPC clients can now connect to http://localhost:8080
  * ```
+ * 
+ * RPC clients can now connect to http://localhost:8080
  */
 export class RpcGateway {
   private readonly config: GatewayConfig & { host: string; maxBodyBytes: number };
@@ -149,7 +150,7 @@ export class RpcGateway {
     }
 
     // Extract methods from payload
-    const methods = extractMethods(payload);
+    const methods = RpcGateway.extractMethods(payload);
     if (!methods.length) {
       this.sendJsonRpcError(res, payload, -32600, "Invalid Request.");
       return;
@@ -177,15 +178,18 @@ export class RpcGateway {
       return;
     }
 
-    // Forward request to upstream
     const startTime = Date.now();
 
     try {
-      const upstreamResponse = await route.balancer.fetch("http://upstream", {
-        method: "POST",
-        headers: this.filterRequestHeaders(req.headers),
-        body: rawBody,
-      });
+      const upstreamResponse = await route.balancer.fetch(
+        "http://upstream",
+        {
+          method: "POST",
+          headers: this.filterRequestHeaders(req.headers),
+          body: rawBody,
+        },
+        methods,
+      );
 
       const duration = Date.now() - startTime;
       const endpoint = route.balancer.getLastUsedEndpoint();
@@ -359,24 +363,27 @@ export class RpcGateway {
 
     return result;
   }
-}
 
-function extractMethods(payload: unknown): string[] {
-  if (Array.isArray(payload)) {
-    return payload
-      .map((entry) =>
-        entry && typeof entry === "object"
-          ? (entry as { method?: unknown }).method
-          : undefined,
-      )
-      .filter((m): m is string => typeof m === "string");
+  /**
+   * Extract JSON-RPC method names from a request payload.
+   * Supports single requests and batch requests.
+   */
+  private static extractMethods(payload: unknown): string[] {
+    if (Array.isArray(payload)) {
+      return payload
+        .map((entry) =>
+          entry && typeof entry === "object"
+            ? (entry as { method?: unknown }).method
+            : undefined,
+        )
+        .filter((m): m is string => typeof m === "string");
+    }
+
+    if (payload && typeof payload === "object") {
+      const method = (payload as { method?: unknown }).method;
+      return typeof method === "string" ? [method] : [];
+    }
+
+    return [];
   }
-
-  if (payload && typeof payload === "object") {
-    const method = (payload as { method?: unknown }).method;
-    return typeof method === "string" ? [method] : [];
-  }
-
-  return [];
 }
-

@@ -10,6 +10,8 @@ type InternalEndpoint = SelectedEndpoint & {
   healthy: boolean;
   lastLatencyMs?: number;
   lastError?: string;
+  methods?: Set<string>;
+  blockedMethods?: Set<string>;
 };
 
 const DEFAULT_OPTIONS: Required<LoadBalancerOptions> = {
@@ -96,9 +98,16 @@ export class LoadBalancer {
   /**
    * Make a fetch request through the load balancer.
    * The input URL is ignored; the selected endpoint URL is used instead.
+   * @param input - Request input (URL is ignored)
+   * @param init - Request init options
+   * @param methods - Optional array of RPC methods to filter endpoints by
    */
-  async fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
-    const endpoint = this.selectEndpoint();
+  async fetch(
+    input: RequestInfo | URL,
+    init?: RequestInit,
+    methods?: string[],
+  ): Promise<Response> {
+    const endpoint = this.selectEndpoint(methods);
     this._lastUsedEndpoint = {
       id: endpoint.id,
       url: endpoint.url,
@@ -112,8 +121,10 @@ export class LoadBalancer {
 
     try {
       const response = await fetch(url, requestInit);
-      this.markSuccess(endpoint, Date.now() - start);
-      if (!response.ok) {
+      if (response.ok) {
+        this.markSuccess(endpoint, Date.now() - start);
+      } else {
+        endpoint.lastLatencyMs = Date.now() - start;
         this.markFailure(endpoint, `HTTP ${response.status}`);
       }
       return response;
@@ -182,14 +193,47 @@ export class LoadBalancer {
       timeoutMs: config.timeoutMs,
       consecutiveFailures: 0,
       healthy: true,
+      methods: config.methods ? new Set(config.methods) : undefined,
+      blockedMethods: config.blockedMethods ? new Set(config.blockedMethods) : undefined,
     };
   }
 
-  private selectEndpoint(): InternalEndpoint {
-    const healthy = this.endpoints.filter((e) => e.healthy);
+  private selectEndpoint(methods?: string[]): InternalEndpoint {
+    let candidates = this.endpoints;
+
+    // Filter by method whitelist/blocklist if methods are specified
+    if (methods?.length) {
+      candidates = candidates.filter((e) => this.endpointSupportsMethod(e, methods));
+    }
+
+    // Filter by health
+    const healthy = candidates.filter((e) => e.healthy);
     const pool =
-      healthy.length >= this.options.minHealthy ? healthy : this.endpoints;
+      healthy.length >= this.options.minHealthy ? healthy : candidates;
+
+    if (!pool.length) {
+      // Fall back to all endpoints if no candidates match
+      const fallback = this.endpoints.filter((e) => e.healthy);
+      return this.selectRoundRobin(fallback.length ? fallback : this.endpoints);
+    }
+
     return this.selectRoundRobin(pool);
+  }
+
+  private endpointSupportsMethod(endpoint: InternalEndpoint, methods: string[]): boolean {
+    // Check blocklist first
+    if (endpoint.blockedMethods) {
+      if (methods.some((m) => endpoint.blockedMethods?.has(m))) {
+        return false;
+      }
+    }
+
+    // Check whitelist
+    if (endpoint.methods) {
+      return methods.every((m) => endpoint.methods?.has(m));
+    }
+
+    return true;
   }
 
   private selectRoundRobin(pool: InternalEndpoint[]): InternalEndpoint {
