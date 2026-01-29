@@ -134,7 +134,7 @@ For the full type-level reference, see:
 See `src/example/`:
 
 - `npm run gateway` — starts an example gateway
-- `npm run client` — runs example client requests against the gateway
+- `npm run client` or `npm run solana-client` — runs Solana-specific client example against the gateway
 - `npm run sdk` — runs an SDK example
 
 ## Development
