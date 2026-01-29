@@ -10,6 +10,8 @@ type InternalEndpoint = SelectedEndpoint & {
   healthy: boolean;
   lastLatencyMs?: number;
   lastError?: string;
+  methods?: Set<string>;
+  blockedMethods?: Set<string>;
 };
 
 const DEFAULT_OPTIONS: Required<LoadBalancerOptions> = {
@@ -17,12 +19,20 @@ const DEFAULT_OPTIONS: Required<LoadBalancerOptions> = {
   minHealthy: 1,
 };
 
+/**
+ * LoadBalancer distributes requests across multiple RPC endpoints
+ * with health tracking and automatic failover.
+ */
 export class LoadBalancer {
   private readonly endpoints: InternalEndpoint[];
   private readonly options: Required<LoadBalancerOptions>;
   private rrIndex = 0;
+  private _lastUsedEndpoint?: SelectedEndpoint;
 
-  constructor(endpoints: Array<string | EndpointConfig>, options?: LoadBalancerOptions) {
+  constructor(
+    endpoints: Array<string | EndpointConfig>,
+    options?: LoadBalancerOptions,
+  ) {
     if (!endpoints.length) {
       throw new Error("LoadBalancer requires at least one endpoint.");
     }
@@ -33,10 +43,16 @@ export class LoadBalancer {
     );
   }
 
+  /**
+   * Get the next URL using round-robin selection.
+   */
   getUrl(): string {
     return this.selectEndpoint().url;
   }
 
+  /**
+   * Get the next endpoint with full configuration.
+   */
   getEndpoint(): SelectedEndpoint {
     const endpoint = this.selectEndpoint();
     return {
@@ -49,6 +65,9 @@ export class LoadBalancer {
     };
   }
 
+  /**
+   * Get status of all endpoints.
+   */
   getStatus(): EndpointStatus[] {
     return this.endpoints.map((endpoint) => ({
       id: endpoint.id,
@@ -60,35 +79,69 @@ export class LoadBalancer {
     }));
   }
 
+  /**
+   * Create a fetch function bound to this load balancer.
+   */
   createFetch(): typeof fetch {
     return (input: RequestInfo | URL, init?: RequestInit) => {
       return this.fetch(input, init);
     };
   }
 
-  async fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
-    const endpoint = this.selectEndpoint();
-    const { url, requestInit } = this.applyEndpointToRequest(endpoint, input, init);
+  /**
+   * Get the last endpoint used by fetch() or request().
+   */
+  getLastUsedEndpoint(): SelectedEndpoint | undefined {
+    return this._lastUsedEndpoint;
+  }
+
+  /**
+   * Make a fetch request through the load balancer.
+   * The input URL is ignored; the selected endpoint URL is used instead.
+   * @param input - Request input (URL is ignored)
+   * @param init - Request init options
+   * @param methods - Optional array of RPC methods to filter endpoints by
+   */
+  async fetch(
+    input: RequestInfo | URL,
+    init?: RequestInit,
+    methods?: string[],
+  ): Promise<Response> {
+    const endpoint = this.selectEndpoint(methods);
+    this._lastUsedEndpoint = {
+      id: endpoint.id,
+      url: endpoint.url,
+      weight: endpoint.weight,
+      priority: endpoint.priority,
+      headers: { ...endpoint.headers },
+      timeoutMs: endpoint.timeoutMs,
+    };
+    const { url, requestInit } = this.buildRequest(endpoint, input, init);
     const start = Date.now();
 
     try {
       const response = await fetch(url, requestInit);
-      this.markSuccess(endpoint, Date.now() - start);
-      if (!response.ok) {
+      if (response.ok) {
+        this.markSuccess(endpoint, Date.now() - start);
+      } else {
+        endpoint.lastLatencyMs = Date.now() - start;
         this.markFailure(endpoint, `HTTP ${response.status}`);
       }
       return response;
     } catch (error) {
-      this.markFailure(endpoint, error instanceof Error ? error.message : "Unknown error");
+      this.markFailure(
+        endpoint,
+        error instanceof Error ? error.message : "Unknown error",
+      );
       throw error;
     }
   }
 
-  async requestJsonRpc<T>(
-    payload: unknown,
-    init?: RequestInit,
-  ): Promise<T> {
-    const response = await this.fetch(this.getUrl(), {
+  /**
+   * Make a JSON-RPC request through the load balancer.
+   */
+  async request<T>(payload: unknown, init?: RequestInit): Promise<T> {
+    const response = await this.fetch("http://localhost", {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -98,30 +151,34 @@ export class LoadBalancer {
       ...init,
     });
 
-    const data = (await response.json()) as T;
-    return data;
+    return (await response.json()) as T;
   }
 
+  /**
+   * Manually mark an endpoint as healthy.
+   */
   markHealthy(urlOrId: string): void {
     const endpoint = this.findEndpoint(urlOrId);
-    if (!endpoint) {
-      return;
-    }
+    if (!endpoint) return;
     endpoint.healthy = true;
     endpoint.consecutiveFailures = 0;
     endpoint.lastError = undefined;
   }
 
+  /**
+   * Manually mark an endpoint as unhealthy.
+   */
   markUnhealthy(urlOrId: string, reason?: string): void {
     const endpoint = this.findEndpoint(urlOrId);
-    if (!endpoint) {
-      return;
-    }
+    if (!endpoint) return;
     endpoint.healthy = false;
     endpoint.lastError = reason;
   }
 
-  private normalizeEndpoint(endpoint: string | EndpointConfig, index: number): InternalEndpoint {
+  private normalizeEndpoint(
+    endpoint: string | EndpointConfig,
+    index: number,
+  ): InternalEndpoint {
     const config = typeof endpoint === "string" ? { url: endpoint } : endpoint;
     if (!config.url) {
       throw new Error("Endpoint must include a url.");
@@ -136,13 +193,47 @@ export class LoadBalancer {
       timeoutMs: config.timeoutMs,
       consecutiveFailures: 0,
       healthy: true,
+      methods: config.methods ? new Set(config.methods) : undefined,
+      blockedMethods: config.blockedMethods ? new Set(config.blockedMethods) : undefined,
     };
   }
 
-  private selectEndpoint(): InternalEndpoint {
-    const healthy = this.endpoints.filter((endpoint) => endpoint.healthy);
-    const pool = healthy.length >= this.options.minHealthy ? healthy : this.endpoints;
+  private selectEndpoint(methods?: string[]): InternalEndpoint {
+    let candidates = this.endpoints;
+
+    // Filter by method whitelist/blocklist if methods are specified
+    if (methods?.length) {
+      candidates = candidates.filter((e) => this.endpointSupportsMethod(e, methods));
+    }
+
+    // Filter by health
+    const healthy = candidates.filter((e) => e.healthy);
+    const pool =
+      healthy.length >= this.options.minHealthy ? healthy : candidates;
+
+    if (!pool.length) {
+      // Fall back to all endpoints if no candidates match
+      const fallback = this.endpoints.filter((e) => e.healthy);
+      return this.selectRoundRobin(fallback.length ? fallback : this.endpoints);
+    }
+
     return this.selectRoundRobin(pool);
+  }
+
+  private endpointSupportsMethod(endpoint: InternalEndpoint, methods: string[]): boolean {
+    // Check blocklist first
+    if (endpoint.blockedMethods) {
+      if (methods.some((m) => endpoint.blockedMethods?.has(m))) {
+        return false;
+      }
+    }
+
+    // Check whitelist
+    if (endpoint.methods) {
+      return methods.every((m) => endpoint.methods?.has(m));
+    }
+
+    return true;
   }
 
   private selectRoundRobin(pool: InternalEndpoint[]): InternalEndpoint {
@@ -154,17 +245,17 @@ export class LoadBalancer {
     return endpoint;
   }
 
-
-  private applyEndpointToRequest(
+  private buildRequest(
     endpoint: InternalEndpoint,
     input: RequestInfo | URL,
     init?: RequestInit,
   ): { url: string; requestInit: RequestInit } {
     const request = input instanceof Request ? input.clone() : undefined;
-    const inputHeaders = request ? request.headers : undefined;
+    const inputHeaders = request?.headers;
     const initHeaders = init?.headers;
 
     const headers = new Headers();
+
     if (inputHeaders) {
       for (const [key, value] of inputHeaders.entries()) {
         headers.set(key, value);
@@ -193,12 +284,14 @@ export class LoadBalancer {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), endpoint.timeoutMs);
       requestInit.signal = controller.signal;
+
       const originalSignal = init?.signal ?? request?.signal;
       if (originalSignal) {
         originalSignal.addEventListener("abort", () => controller.abort(), {
           once: true,
         });
       }
+
       requestInit.signal.addEventListener("abort", () => clearTimeout(timeout), {
         once: true,
       });
@@ -226,7 +319,7 @@ export class LoadBalancer {
 
   private findEndpoint(urlOrId: string): InternalEndpoint | undefined {
     return this.endpoints.find(
-      (endpoint) => endpoint.id === urlOrId || endpoint.url === urlOrId,
+      (e) => e.id === urlOrId || e.url === urlOrId,
     );
   }
 }
@@ -235,11 +328,9 @@ function normalizeHeaders(headers: HeadersInit): Record<string, string> {
   if (headers instanceof Headers) {
     return Object.fromEntries(headers.entries());
   }
-
   if (Array.isArray(headers)) {
     return Object.fromEntries(headers);
   }
-
   return headers;
 }
 
