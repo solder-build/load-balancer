@@ -26,6 +26,8 @@
     "test:watch": "node --experimental-vm-modules node_modules/jest/bin/jest.js --watch",
     "test:coverage": "node --experimental-vm-modules node_modules/jest/bin/jest.js --coverage",
     "gateway": "npm run build && node dist/example/gateway.js",
+    "gateway:alerts": "npm run build && node dist/example/gateway-with-alerts.js",
+    "gateway:test-unhealthy": "npm run build && TEST_UNHEALTHY=true node dist/example/gateway-with-alerts.js",
     "sdk": "npm run build && node dist/example/sdk.js",
     "client": "npm run build && node dist/example/solana-client.js",
     "solana-client": "npm run build && node dist/example/solana-client.js"
