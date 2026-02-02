@@ -1,3 +1,11 @@
+/**
+ * Example: Solana mainnet gateway with Telegram alerts.
+ *
+ * This starts an `RpcGateway` pointing at Solana RPC endpoints and configures
+ * Telegram notifications for unhealthy endpoints. It also includes a
+ * test helper that intentionally targets a bad endpoint URL to demonstrate
+ * how alerts are triggered when the failure threshold is exceeded.
+ */
 import { RpcGateway } from "../gateway/index.js";
 
 const gateway = new RpcGateway({

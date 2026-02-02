@@ -35,9 +35,21 @@ export interface CorsConfig {
  * Telegram alert configuration for the gateway.
  */
 export interface TelegramConfig {
-  /** Telegram bot token */
+  /**
+   * Telegram bot token.
+   *
+   * Example: "8109736454:AAGX4J9IcP5WCKRZUOaFm16TeOmwXdID7xI"
+   * (format: "<bot-id>:<long-secret-token>")
+   */
   botToken: string;
-  /** Telegram chat ID to send alerts to */
+  /**
+   * Telegram chat ID to send alerts to.
+   *
+   * For direct chats this is usually a positive integer, and for groups
+   * it is typically a negative integer.
+   *
+   * Example (group): "-1003451681211"
+   */
   chatId: string;
 }
 
