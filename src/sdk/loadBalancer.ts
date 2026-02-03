@@ -12,9 +12,10 @@ type InternalEndpoint = SelectedEndpoint & {
   lastError?: string;
   methods?: Set<string>;
   blockedMethods?: Set<string>;
+  alertSent?: boolean;
 };
 
-const DEFAULT_OPTIONS: Required<LoadBalancerOptions> = {
+const DEFAULT_OPTIONS: Required<Omit<LoadBalancerOptions, "onEndpointUnhealthy">> = {
   failureThreshold: 3,
   minHealthy: 1,
 };
@@ -25,9 +26,10 @@ const DEFAULT_OPTIONS: Required<LoadBalancerOptions> = {
  */
 export class LoadBalancer {
   private readonly endpoints: InternalEndpoint[];
-  private readonly options: Required<LoadBalancerOptions>;
+  private readonly options: Required<Omit<LoadBalancerOptions, "onEndpointUnhealthy">> & Pick<LoadBalancerOptions, "onEndpointUnhealthy">;
   private rrIndex = 0;
   private _lastUsedEndpoint?: SelectedEndpoint;
+  private routeId?: string;
 
   constructor(
     endpoints: Array<string | EndpointConfig>,
@@ -171,8 +173,20 @@ export class LoadBalancer {
   markUnhealthy(urlOrId: string, reason?: string): void {
     const endpoint = this.findEndpoint(urlOrId);
     if (!endpoint) return;
+    const wasHealthy = endpoint.healthy;
     endpoint.healthy = false;
     endpoint.lastError = reason;
+    if (wasHealthy || !endpoint.alertSent) {
+      this.triggerAlert(endpoint);
+    }
+  }
+
+  /**
+   * Set route ID for alert callbacks (used by gateway).
+   * @internal
+   */
+  setRouteId(routeId: string): void {
+    this.routeId = routeId;
   }
 
   private normalizeEndpoint(
@@ -195,6 +209,7 @@ export class LoadBalancer {
       healthy: true,
       methods: config.methods ? new Set(config.methods) : undefined,
       blockedMethods: config.blockedMethods ? new Set(config.blockedMethods) : undefined,
+      alertSent: false,
     };
   }
 
@@ -301,9 +316,11 @@ export class LoadBalancer {
   }
 
   private markSuccess(endpoint: InternalEndpoint, latencyMs?: number): void {
+    const wasUnhealthy = !endpoint.healthy;
     endpoint.consecutiveFailures = 0;
     endpoint.healthy = true;
     endpoint.lastError = undefined;
+    endpoint.alertSent = false; // Reset alert flag when endpoint recovers
     if (latencyMs !== undefined) {
       endpoint.lastLatencyMs = latencyMs;
     }
@@ -313,8 +330,35 @@ export class LoadBalancer {
     endpoint.consecutiveFailures += 1;
     endpoint.lastError = reason;
     if (endpoint.consecutiveFailures >= this.options.failureThreshold) {
+      const wasHealthy = endpoint.healthy;
       endpoint.healthy = false;
+      // Only trigger alert when transitioning from healthy to unhealthy
+      if (wasHealthy) {
+        this.triggerAlert(endpoint);
+      }
     }
+  }
+
+  private triggerAlert(endpoint: InternalEndpoint): void {
+    // Only send alert once per unhealthy state
+    if (endpoint.alertSent || !this.options.onEndpointUnhealthy) {
+      return;
+    }
+
+    endpoint.alertSent = true;
+    const alert = {
+      endpointId: endpoint.id,
+      url: endpoint.url,
+      routeId: this.routeId,
+      consecutiveFailures: endpoint.consecutiveFailures,
+      lastError: endpoint.lastError,
+      timestamp: Date.now(),
+    };
+
+    // Fire and forget - don't block request handling
+    Promise.resolve(this.options.onEndpointUnhealthy(alert)).catch((error) => {
+      console.error("Error in alert callback:", error);
+    });
   }
 
   private findEndpoint(urlOrId: string): InternalEndpoint | undefined {

@@ -89,6 +89,10 @@ const lb = new LoadBalancer([
 const gateway = new RpcGateway({
   port: 8080,
   defaultRouteId: "default",
+  telegram: {
+    botToken: "1234567890:exampleToken",
+    chatId: "-1234567890",
+  },
   routes: [
     {
       id: "heavy",

@@ -19,6 +19,18 @@ export interface EndpointConfig {
 }
 
 /**
+ * Alert callback function called when an endpoint becomes unhealthy.
+ */
+export type AlertCallback = (alert: {
+  endpointId: string;
+  url: string;
+  routeId?: string;
+  consecutiveFailures: number;
+  lastError?: string;
+  timestamp: number;
+}) => void | Promise<void>;
+
+/**
  * Options for the LoadBalancer.
  */
 export interface LoadBalancerOptions {
@@ -26,6 +38,8 @@ export interface LoadBalancerOptions {
   failureThreshold?: number;
   /** Minimum healthy endpoints before falling back to all (default: 1) */
   minHealthy?: number;
+  /** Optional callback called when an endpoint becomes unhealthy */
+  onEndpointUnhealthy?: AlertCallback;
 }
 
 /**

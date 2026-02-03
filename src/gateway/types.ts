@@ -1,4 +1,8 @@
-import type { EndpointConfig, LoadBalancerOptions } from "../sdk/types.js";
+import type {
+  AlertCallback,
+  EndpointConfig,
+  LoadBalancerOptions,
+} from "../sdk/types.js";
 
 /**
  * Configuration for a route in the gateway.
@@ -28,6 +32,28 @@ export interface CorsConfig {
 }
 
 /**
+ * Telegram alert configuration for the gateway.
+ */
+export interface TelegramConfig {
+  /**
+   * Telegram bot token.
+   *
+   * Example: "8109736454:AAGX4J9IcP5WCKRZUOaFm16TeOmwXdID7xI"
+   * (format: "<bot-id>:<long-secret-token>")
+   */
+  botToken: string;
+  /**
+   * Telegram chat ID to send alerts to.
+   *
+   * For direct chats this is usually a positive integer, and for groups
+   * it is typically a negative integer.
+   *
+   * Example (group): "-1003451681211"
+   */
+  chatId: string;
+}
+
+/**
  * Configuration for the RPC Gateway.
  */
 export interface GatewayConfig {
@@ -45,6 +71,10 @@ export interface GatewayConfig {
   cors?: CorsConfig;
   /** Optional: max request body size in bytes (default: 1MB) */
   maxBodyBytes?: number;
+  /** Optional: Telegram alert configuration */
+  telegram?: TelegramConfig;
+  /** Optional: custom alert callback (overrides telegram if both provided) */
+  onEndpointUnhealthy?: AlertCallback;
 }
 
 /**

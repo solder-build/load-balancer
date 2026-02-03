@@ -1,6 +1,8 @@
 import { createServer } from "node:http";
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import { LoadBalancer } from "../sdk/loadBalancer.js";
+import { createTelegramAlert } from "../sdk/alerts.js";
+import type { AlertCallback } from "../sdk/types.js";
 import type { GatewayConfig, RouteStatus } from "./types.js";
 
 interface InternalRoute {
@@ -48,11 +50,37 @@ export class RpcGateway {
       maxBodyBytes: config.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES,
     };
 
-    this.routes = config.routes.map((route) => ({
-      id: route.id,
-      methods: route.methods ? new Set(route.methods) : undefined,
-      balancer: new LoadBalancer(route.endpoints, route.options),
-    }));
+    const alertCallback = this.createAlertCallback(config);
+
+    this.routes = config.routes.map((route) => {
+      const routeOptions = {
+        ...route.options,
+        onEndpointUnhealthy: alertCallback,
+      };
+      const balancer = new LoadBalancer(route.endpoints, routeOptions);
+      balancer.setRouteId(route.id);
+      return {
+        id: route.id,
+        methods: route.methods ? new Set(route.methods) : undefined,
+        balancer,
+      };
+    });
+  }
+
+  private createAlertCallback(config: GatewayConfig): AlertCallback | undefined {
+    if (config.onEndpointUnhealthy) {
+      return config.onEndpointUnhealthy;
+    }
+
+    // Telegram config
+    if (config.telegram) {
+      return createTelegramAlert({
+        botToken: config.telegram.botToken,
+        chatId: config.telegram.chatId,
+      });
+    }
+
+    return undefined;
   }
 
   /**
