@@ -1,6 +1,6 @@
 import { RpcGateway } from "../gateway/index.js";
 import { WebSocketServer, WebSocket } from "ws";
-import type { IncomingMessage } from "http";
+import type { IncomingMessage, ServerResponse } from "http";
 
 // Cloud Run configuration
 const PORT = parseInt(process.env.PORT || "8080", 10);
@@ -67,6 +67,85 @@ const ALL_STARKNET_METHODS = [
   ...STARKNET_WRITE_METHODS,
   ...STARKNET_TRACE_METHODS,
 ];
+
+// ── In-memory stats ──────────────────────────────────────────────────────────
+
+const _stats = {
+  startTime: Date.now(),
+  total: 0, success: 0, failed: 0,
+  responseTimes: [] as number[],
+  methods: {} as Record<string, number>,
+  hourly: new Map<string, { req: number; err: number; ms: number }>(),
+};
+
+function _hourKey(d = new Date()): string {
+  const h = new Date(d);
+  h.setMinutes(0, 0, 0);
+  return h.toISOString();
+}
+
+function _recordRequest(method: string | null, ms: number, ok: boolean): void {
+  _stats.total++;
+  ok ? _stats.success++ : _stats.failed++;
+  _stats.responseTimes.push(ms);
+  if (_stats.responseTimes.length > 5000) _stats.responseTimes.shift();
+  if (method) _stats.methods[method] = (_stats.methods[method] || 0) + 1;
+  const key = _hourKey();
+  const b = _stats.hourly.get(key) ?? { req: 0, err: 0, ms: 0 };
+  b.req++; if (!ok) b.err++; b.ms += ms;
+  _stats.hourly.set(key, b);
+  const cutoff = _hourKey(new Date(Date.now() - 25 * 3600_000));
+  for (const k of _stats.hourly.keys()) if (k < cutoff) _stats.hourly.delete(k);
+}
+
+function _buildStats(): object {
+  const uptime = Math.floor((Date.now() - _stats.startTime) / 1000);
+  const avgMs = _stats.responseTimes.length
+    ? Math.round(_stats.responseTimes.reduce((a, b) => a + b, 0) / _stats.responseTimes.length)
+    : 0;
+  const now = Date.now();
+  const hourlyStats = Array.from({ length: 24 }, (_, i) => {
+    const d = new Date(now - (23 - i) * 3600_000);
+    d.setMinutes(0, 0, 0);
+    const b = _stats.hourly.get(d.toISOString());
+    return {
+      hour: d.toISOString(),
+      requests: b?.req ?? 0,
+      errors: b?.err ?? 0,
+      avgResponseTime: b && b.req > 0 ? Math.round(b.ms / b.req) : 0,
+    };
+  });
+  const totalM = Object.values(_stats.methods).reduce((a, b) => a + b, 0);
+  const top5 = Object.entries(_stats.methods)
+    .sort(([, a], [, b]) => b - a).slice(0, 5)
+    .map(([method, count]) => ({
+      method, count,
+      percentage: totalM > 0 ? Math.round(count / totalM * 100) : 0,
+    }));
+  if (top5.length > 0) {
+    const topCount = top5.reduce((a, b) => a + b.count, 0);
+    const othersCount = _stats.total - topCount;
+    if (othersCount > 0) {
+      top5.push({
+        method: "others", count: othersCount,
+        percentage: Math.max(0, 100 - top5.reduce((a, b) => a + b.percentage, 0)),
+      });
+    }
+  }
+  return {
+    timestamp: new Date().toISOString(),
+    uptime,
+    totalRequests: _stats.total,
+    successfulRequests: _stats.success,
+    failedRequests: _stats.failed,
+    averageResponseTime: avgMs,
+    requestsPerSecond: uptime > 0 ? Math.round(_stats.total / uptime * 10) / 10 : 0,
+    hourlyStats,
+    methodStats: top5,
+  };
+}
+
+// ── WebSocket helpers ─────────────────────────────────────────────────────────
 
 /**
  * Extract API key from WebSocket upgrade request
@@ -242,6 +321,47 @@ async function main(): Promise<void> {
     throw new Error("Failed to get HTTP server from gateway");
   }
 
+  // ── Attach stats interceptor ────────────────────────────────────────────
+  const existing = httpServer.listeners("request").slice() as ((
+    req: IncomingMessage, res: ServerResponse
+  ) => void)[];
+  httpServer.removeAllListeners("request");
+
+  httpServer.on("request", (req: IncomingMessage, res: ServerResponse) => {
+    // Serve real-time stats
+    if (req.url === "/stats" && req.method === "GET") {
+      res.writeHead(200, { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" });
+      res.end(JSON.stringify(_buildStats()));
+      return;
+    }
+
+    // Track POST requests (JSON-RPC)
+    if (req.method === "POST") {
+      const start = Date.now();
+      let method: string | null = null;
+      const chunks: Buffer[] = [];
+      req.on("data", (chunk: Buffer) => chunks.push(chunk));
+      req.once("end", () => {
+        try {
+          const body = JSON.parse(Buffer.concat(chunks).toString());
+          method = Array.isArray(body) ? (body[0]?.method ?? null) : (body.method ?? null);
+        } catch { /* ignore */ }
+      });
+      const origEnd = (res.end as (...args: unknown[]) => unknown).bind(res);
+      let tracked = false;
+      (res as unknown as Record<string, unknown>).end = function (...args: unknown[]) {
+        if (!tracked) {
+          tracked = true;
+          _recordRequest(method, Date.now() - start, res.statusCode < 400);
+        }
+        return origEnd(...args);
+      };
+    }
+
+    for (const fn of existing) fn.call(httpServer, req, res);
+  });
+  // ── End stats interceptor ───────────────────────────────────────────────
+
   // Create WebSocket server
   const apiKeySet = new Set(WS_API_KEYS);
   const wss = new WebSocketServer({
@@ -292,6 +412,7 @@ async function main(): Promise<void> {
 
   console.log("\n✓ Starknet RPC Gateway is running on Cloud Run");
   console.log(`  HTTP:      https://<cloud-run-url>`);
+  console.log(`  Stats:     https://<cloud-run-url>/stats`);
   console.log(`  WebSocket: wss://<cloud-run-url>${WS_PATH}`);
   console.log("\nPress Ctrl+C to stop.\n");
 
